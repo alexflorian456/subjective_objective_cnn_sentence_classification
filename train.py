@@ -35,7 +35,7 @@ tf.flags.DEFINE_integer("num_checkpoints", 5, "Number of checkpoints to store (d
 tf.flags.DEFINE_boolean("allow_soft_placement", True, "Allow device soft device placement")
 tf.flags.DEFINE_boolean("log_device_placement", False, "Log placement of ops on devices")
 
-vocab_file = "./corola.300.20.vec"
+vocab_file = "./corola.100.50.vec"
 
 FLAGS = tf.flags.FLAGS
 # FLAGS._parse_flags()
@@ -45,7 +45,6 @@ FLAGS = tf.flags.FLAGS
 # print("")
 
 def create_vocabulary_dicts(vocab_file):
-    vocab_id_dict = {}
     vocab_embed_dict = {}
     with open(vocab_file, 'r') as f:
         f.readline() # skip header
@@ -56,48 +55,73 @@ def create_vocabulary_dicts(vocab_file):
                 break
             word = line.strip().split()[0]
             embed = line.strip().split()[1:]
-            vocab_id_dict[word] = word_id
             vocab_embed_dict[word] = [float(element) for element in embed]
             word_id += 1
-    return vocab_id_dict, vocab_embed_dict
+    return vocab_embed_dict
 
-def sentences_to_array(sentences, vocab_id_dict, max_document_length):
+def sentences_to_indices_matrix_and_embed_tensor(sentences, vocab_embed_dict, max_document_length):
     sentence_array = np.zeros((len(sentences), max_document_length), dtype=np.int32)
-    unfound_word_id = len(vocab_id_dict.keys()) + 1
-    unfound_words_dict = {}
+
+    word_id_dict = {}
+    word_id = 1
+
+    # unfound_word_id = len(vocab_id_dict.keys()) + 1
+    # unfound_words_dict = {}
     for sentence_idx, sentence in enumerate(sentences):
         for word_idx, word in enumerate(sentence.split(' ')):
             if word[len(word)-1] == '.':
                 word = word.split('.')[0]
+            
             word_array_value = 0
-            if word not in vocab_id_dict.keys():
-                if word not in unfound_words_dict.keys():
-                    unfound_words_dict[word] = unfound_word_id
-                    unfound_word_id += 1
-                    #word_array_value = unfound_word_id # TODO: decomment and find solution
+            if word in vocab_embed_dict.keys():
+                if word in word_id_dict.keys():
+                    word_array_value = word_id_dict[word]
                 else:
-                    #word_array_value = unfound_words_dict[word]
-                    pass
-            else:
-                word_array_value = vocab_id_dict[word]
-            sentence_array[sentence_idx, word_idx] = word_array_value
-    print("array:", sentence_array)
-    return sentence_array
+                    word_id_dict[word] = word_id
+                    word_array_value = word_id
+                    word_id += 1
+            
 
-def create_embed_tensor(vocab_id_dict, vocab_embed_dict):
-    embed_tensor = tf.Variable(tf.zeros([max(vocab_id_dict.values())+1, max([len(embed) for embed in vocab_embed_dict.values()])]))
-    print("Embed tensor shape: ", embed_tensor.shape)
-    iter = 0
-    for word, word_id in vocab_id_dict.items():
-        # embed_tensor[word_id, :] = vocab_embed_dict[word]
-        # embed_tensor = tf.tensor_scatter_nd_update(embed_tensor, [[word_id]], [tf.constant(vocab_embed_dict[word])])
-        embed_tensor[word_id-1].assign(tf.constant(vocab_embed_dict[word]))
-        if iter%5000 == 0:
-            print(f"Generating embed tensor: {int(iter/len(vocab_id_dict.keys())*100)}% Done")
+
+            # if word not in vocab_id_dict.keys():
+            #     if word not in unfound_words_dict.keys():
+            #         unfound_words_dict[word] = unfound_word_id
+            #         unfound_word_id += 1
+            #         #word_array_value = unfound_word_id # TODO: decomment and find solution
+            #     else:
+            #         #word_array_value = unfound_words_dict[word]
+            #         pass
+            # else:
+            #     word_array_value = vocab_id_dict[word]
+            sentence_array[sentence_idx, word_idx] = word_array_value
+
+    embed_tensor = tf.Variable(tf.zeros([word_id, max([len(embed) for embed in vocab_embed_dict.values()])]))
+    print(embed_tensor.shape)
+
+    iter = 1
+    for word, word_id in word_id_dict.items():
+        embed_tensor[word_id].assign(tf.constant(vocab_embed_dict[word]))
+        if iter%1000 == 0:
+            print(f"Generating embed tensor: {int(iter/len(word_id_dict.keys())*100)}% Done")
         iter +=1
-    print("Done generating embed tensor")
-    # print(embed_tensor)
-    return embed_tensor
+    
+    print("array:", sentence_array)
+    return sentence_array, embed_tensor
+
+# def create_embed_tensor(vocab_id_dict, vocab_embed_dict):
+#     embed_tensor = tf.Variable(tf.zeros([max(vocab_id_dict.values())+1, max([len(embed) for embed in vocab_embed_dict.values()])]))
+#     print("Embed tensor shape: ", embed_tensor.shape)
+#     iter = 0
+#     for word, word_id in vocab_id_dict.items():
+#         # embed_tensor[word_id, :] = vocab_embed_dict[word]
+#         # embed_tensor = tf.tensor_scatter_nd_update(embed_tensor, [[word_id]], [tf.constant(vocab_embed_dict[word])])
+#         embed_tensor[word_id-1].assign(tf.constant(vocab_embed_dict[word]))
+#         if iter%5000 == 0:
+#             print(f"Generating embed tensor: {int(iter/len(vocab_id_dict.keys())*100)}% Done")
+#         iter +=1
+#     print("Done generating embed tensor")
+#     # print(embed_tensor)
+#     return embed_tensor
 
 def preprocess():
     # Data Preparation
@@ -109,11 +133,8 @@ def preprocess():
     # Build vocabulary
     max_document_length = max([len(x.split(" ")) for x in x_text])
     print("Max doc length:", max_document_length)
-    vocab_id_dict, vocab_embed_dict = create_vocabulary_dicts(vocab_file)
-    embed_tensor = create_embed_tensor(vocab_id_dict, vocab_embed_dict)
-    x = sentences_to_array(x_text, vocab_id_dict, max_document_length)
-    vocab_processor = learn.preprocessing.VocabularyProcessor(max_document_length)
-    # x = np.array(list(vocab_processor.fit_transform(x_text)))
+    vocab_embed_dict = create_vocabulary_dicts(vocab_file)
+    x, embed_tensor = sentences_to_indices_matrix_and_embed_tensor(x_text, vocab_embed_dict, max_document_length)
     print(x)
 
     # Randomly shuffle data
@@ -130,19 +151,17 @@ def preprocess():
 
     del x, y, x_shuffled, y_shuffled
 
-    print("Vocabulary Size: {:d}".format(len(vocab_processor.vocabulary_)))
+    print("Vocabulary Size: {:d}".format(int(embed_tensor.shape[0])))
     print("Train/Dev split: {:d}/{:d}".format(len(y_train), len(y_dev)))
 
     print(y_train)
-    return x_train, y_train, vocab_id_dict, x_dev, y_dev, embed_tensor
+    return x_train, y_train, x_dev, y_dev, embed_tensor
 
-def train(x_train, y_train, vocab_id_dict, x_dev, y_dev, embed_tensor):
+def train(x_train, y_train, x_dev, y_dev, embed_tensor):
     # Training
     # ==================================================
 
-    with tf.Graph().as_default():
-        embed_tensor_default_graph_copy = tf.Variable(tf.zeros_like(embed_tensor))
-        embed_tensor_default_graph_copy.assign(embed_tensor)
+    # with tf.Graph().as_default():
         session_conf = tf.ConfigProto(
           allow_soft_placement=FLAGS.allow_soft_placement,
           log_device_placement=FLAGS.log_device_placement)
@@ -151,12 +170,12 @@ def train(x_train, y_train, vocab_id_dict, x_dev, y_dev, embed_tensor):
             cnn = TextCNN(
                 sequence_length=x_train.shape[1],
                 num_classes=y_train.shape[1],
-                vocab_size=len(vocab_id_dict.keys()),
-                embedding_size=FLAGS.embedding_dim,
+                vocab_size=int(embed_tensor.shape[0]),
+                embedding_size=int(embed_tensor.shape[1]),
                 filter_sizes=list(map(int, FLAGS.filter_sizes.split(","))),
                 num_filters=FLAGS.num_filters,
                 l2_reg_lambda=FLAGS.l2_reg_lambda,
-                embed_tensor=embed_tensor_default_graph_copy)
+                embed_tensor=embed_tensor)
 
             # Define Training procedure
             global_step = tf.Variable(0, name="global_step", trainable=False)
@@ -199,9 +218,6 @@ def train(x_train, y_train, vocab_id_dict, x_dev, y_dev, embed_tensor):
             if not os.path.exists(checkpoint_dir):
                 os.makedirs(checkpoint_dir)
             saver = tf.train.Saver(tf.global_variables(), max_to_keep=FLAGS.num_checkpoints)
-
-            # Write vocabulary
-            # vocab_processor.save(os.path.join(out_dir, "vocab"))
 
             # Initialize all variables
             sess.run(tf.global_variables_initializer())
@@ -256,8 +272,8 @@ def train(x_train, y_train, vocab_id_dict, x_dev, y_dev, embed_tensor):
                     print("Saved model checkpoint to {}\n".format(path))
 
 def main(argv=None):
-    x_train, y_train, vocab_id_dict, x_dev, y_dev, embed_tensor = preprocess()
-    train(x_train, y_train, vocab_id_dict, x_dev, y_dev, embed_tensor)
+    x_train, y_train, x_dev, y_dev, embed_tensor = preprocess()
+    train(x_train, y_train, x_dev, y_dev, embed_tensor)
 
 if __name__ == '__main__':
     tf.app.run()
