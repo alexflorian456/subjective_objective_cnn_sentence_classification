@@ -155,7 +155,9 @@ def preprocess():
     print("Train/Dev split: {:d}/{:d}".format(len(y_train), len(y_dev)))
 
     print(y_train)
-    return x_train, y_train, x_dev, y_dev, embed_tensor
+    x_text = [x_text[i] for i in shuffle_indices]
+    x_text = x_text[dev_sample_index:]
+    return x_train, y_train, x_dev, y_dev, embed_tensor, x_text
 
 def train(x_train, y_train, x_dev, y_dev, embed_tensor):
     # Training
@@ -272,7 +274,7 @@ def train(x_train, y_train, x_dev, y_dev, embed_tensor):
                     print("Saved model checkpoint to {}\n".format(path))
 
 def main(argv=None):
-    x_train, y_train, x_dev, y_dev, embed_tensor = preprocess()
+    x_train, y_train, x_dev, y_dev, embed_tensor, _ = preprocess()
     train(x_train, y_train, x_dev, y_dev, embed_tensor)
 
 if __name__ == '__main__':
