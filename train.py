@@ -19,7 +19,7 @@ tf.flags.DEFINE_string("positive_data_file", "./data/subj-obj/all_obj.txt", "Dat
 tf.flags.DEFINE_string("negative_data_file", "./data/subj-obj/all_subj.txt", "Data source for the negative data.")
 
 # Model Hyperparameters
-tf.flags.DEFINE_integer("embedding_dim", 300, "Dimensionality of character embedding (default: 128)")
+tf.flags.DEFINE_integer("embedding_dim", 100, "Dimensionality of character embedding (default: 128)")
 tf.flags.DEFINE_string("filter_sizes", "3,4,5", "Comma-separated filter sizes (default: '3,4,5')")
 tf.flags.DEFINE_integer("num_filters", 128, "Number of filters per filter size (default: 128)")
 tf.flags.DEFINE_float("dropout_keep_prob", 0.5, "Dropout keep probability (default: 0.5)")
@@ -59,7 +59,7 @@ def create_vocabulary_dicts(vocab_file):
             word_id += 1
     return vocab_embed_dict
 
-def sentences_to_indices_matrix_and_embed_tensor(sentences, vocab_embed_dict, max_document_length):
+def sentences_to_indices_matrix_and_embed_tensor(sentences, vocab_embed_dict, max_document_length, generate_embed_tensor):
     sentence_array = np.zeros((len(sentences), max_document_length), dtype=np.int32)
 
     word_id_dict = {}
@@ -95,15 +95,18 @@ def sentences_to_indices_matrix_and_embed_tensor(sentences, vocab_embed_dict, ma
             #     word_array_value = vocab_id_dict[word]
             sentence_array[sentence_idx, word_idx] = word_array_value
 
-    embed_tensor = tf.Variable(tf.zeros([word_id, max([len(embed) for embed in vocab_embed_dict.values()])]))
-    print(embed_tensor.shape)
+    if generate_embed_tensor:
+        embed_tensor = tf.Variable(tf.zeros([word_id, max([len(embed) for embed in vocab_embed_dict.values()])]))
+        print(embed_tensor.shape)
 
-    iter = 1
-    for word, word_id in word_id_dict.items():
-        embed_tensor[word_id].assign(tf.constant(vocab_embed_dict[word]))
-        if iter%1000 == 0:
-            print(f"Generating embed tensor: {int(iter/len(word_id_dict.keys())*100)}% Done")
-        iter +=1
+        iter = 1
+        for word, word_id in word_id_dict.items():
+            embed_tensor[word_id].assign(tf.constant(vocab_embed_dict[word]))
+            if iter%1000 == 0:
+                print(f"Generating embed tensor: {int(iter/len(word_id_dict.keys())*100)}% Done")
+            iter +=1
+    else:
+        embed_tensor = None
     
     print("array:", sentence_array)
     return sentence_array, embed_tensor
@@ -123,7 +126,7 @@ def sentences_to_indices_matrix_and_embed_tensor(sentences, vocab_embed_dict, ma
 #     # print(embed_tensor)
 #     return embed_tensor
 
-def preprocess():
+def preprocess(generate_embed_tensor=True):
     # Data Preparation
     # ==================================================
 
@@ -134,7 +137,7 @@ def preprocess():
     max_document_length = max([len(x.split(" ")) for x in x_text])
     print("Max doc length:", max_document_length)
     vocab_embed_dict = create_vocabulary_dicts(vocab_file)
-    x, embed_tensor = sentences_to_indices_matrix_and_embed_tensor(x_text, vocab_embed_dict, max_document_length)
+    x, embed_tensor = sentences_to_indices_matrix_and_embed_tensor(x_text, vocab_embed_dict, max_document_length, generate_embed_tensor)
     print(x)
 
     # Randomly shuffle data
@@ -151,7 +154,6 @@ def preprocess():
 
     del x, y, x_shuffled, y_shuffled
 
-    print("Vocabulary Size: {:d}".format(int(embed_tensor.shape[0])))
     print("Train/Dev split: {:d}/{:d}".format(len(y_train), len(y_dev)))
 
     print(y_train)

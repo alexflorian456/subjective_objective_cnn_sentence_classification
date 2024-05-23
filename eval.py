@@ -14,20 +14,16 @@ import csv
 # Parameters
 # ==================================================
 
-# Data Parameters
-tf.flags.DEFINE_string("positive_data_file", "./data/subj-obj/all_obj.txt", "Data source for the positive data.")
-tf.flags.DEFINE_string("negative_data_file", "./data/subj-obj/all_subj.txt", "Data source for the negative data.")
-
 # Eval Parameters
-tf.flags.DEFINE_integer("batch_size", 64, "Batch Size (default: 64)")
+# tf.flags.DEFINE_integer("batch_size", 64, "Batch Size (default: 64)")
 tf.flags.DEFINE_string("checkpoint_dir", "", "Checkpoint directory from training run")
 tf.flags.DEFINE_boolean("eval_train", False, "Evaluate on all training data")
 
 # Misc Parameters
-tf.flags.DEFINE_boolean("allow_soft_placement", True, "Allow device soft device placement")
-tf.flags.DEFINE_boolean("log_device_placement", False, "Log placement of ops on devices")
+# tf.flags.DEFINE_boolean("allow_soft_placement", True, "Allow device soft device placement")
+# tf.flags.DEFINE_boolean("log_device_placement", False, "Log placement of ops on devices")
 
-tf.flags.DEFINE_float("dev_sample_percentage", .1, "Percentage of the training data to use for validation")
+# tf.flags.DEFINE_float("dev_sample_percentage", .1, "Percentage of the training data to use for validation")
 
 FLAGS = tf.flags.FLAGS
 #FLAGS._parse_flags()
@@ -43,7 +39,7 @@ if FLAGS.eval_train:
 else:
     # x_raw = ["a masterpiece four years in the making", "everything is off."]
     # y_test = [1, 0]
-    _, _, x_test, y_test, _ = preprocess()
+    _, _, x_test, y_test, _, x_raw = preprocess(generate_embed_tensor=False)
 
 # Map data into vocabulary
 # vocab_path = os.path.join(FLAGS.checkpoint_dir, "..", "vocab")
@@ -86,7 +82,7 @@ with graph.as_default():
 
 # Print accuracy if y_test is defined
 if y_test is not None:
-    correct_predictions = float(sum(all_predictions == y_test))
+    correct_predictions = float(sum([1 if all_predictions[i] == y_test[i][1] else 0 for i in range(len(all_predictions))])) #all_predictions == y_test))
     print("Total number of test examples: {}".format(len(y_test)))
     print("Accuracy: {:g}".format(correct_predictions/float(len(y_test))))
 
