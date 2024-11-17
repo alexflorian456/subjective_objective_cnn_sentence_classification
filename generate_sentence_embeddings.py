@@ -1,3 +1,8 @@
+import seaborn as sns
+import pandas as pd
+from sklearn.manifold import TSNE
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
 import numpy as np
 import tensorflow as tf
 import data_helpers
@@ -92,6 +97,8 @@ def sentence_embeddings(generate_embed_tensor=True):
         if math.isnan(np.linalg.norm(sentence_embeddings_tensor[sentence_index])):
             print("Nan embedding: ", sentence, x_text[sentence_index])
 
+    print(sentence_embeddings_tensor.shape[1])
+
     # Option 1: Without normalization
     pca_unnormalized = PCA(n_components=2)
     reduced_unnormalized = pca_unnormalized.fit_transform(sentence_embeddings_tensor)
@@ -101,15 +108,78 @@ def sentence_embeddings(generate_embed_tensor=True):
     pca_normalized = PCA(n_components=2)
     reduced_normalized = pca_normalized.fit_transform(normalized_embeddings)
 
+
     # Plot the sentences as points
     plt.figure(figsize=(8, 6))
-    plt.scatter(reduced_normalized[y[:, 1] == 1.0, 0], reduced_normalized[y[:, 1] == 1.0, 1], alpha=0.5, color='blue')
-    plt.scatter(reduced_normalized[y[:, 1] == 0.0, 0], reduced_normalized[y[:, 1] == 0.0, 1], alpha=0.5, color='red')
-    plt.title("Sentence Embeddings in PCA Space")
+    plt.scatter(reduced_unnormalized[y[:, 1] == 1.0, 0], reduced_unnormalized[y[:, 1] == 1.0, 1], alpha=0.5, color='blue')
+    plt.scatter(reduced_unnormalized[y[:, 1] == 0.0, 0], reduced_unnormalized[y[:, 1] == 0.0, 1], alpha=0.5, color='red')
+    eigenvectors=pca_unnormalized.components_
+    for i in range(eigenvectors.shape[0]):
+        plt.quiver(0, 0, eigenvectors[i, 0], eigenvectors[i, 1], angles='xy', scale_units='xy', scale=0.01, color='yellow', label=f"PC{i+1}" if i == 0 else "")
+    
+    plt.title(f"Sentence Embeddings in PCA Space.")
     plt.xlabel("PC1")
     plt.ylabel("PC2")
     plt.grid(True)
     plt.savefig("pca_plot.png", dpi=300, bbox_inches="tight")
+    plt.close()
+
+    plt.figure(figsize=(8, 6))
+    sns.heatmap(pca_unnormalized.components_, cmap='coolwarm')
+    plt.title('PCA Loading Matrix')
+    plt.savefig("loading_matrix.png", dpi=300, bbox_inches="tight")
+    plt.close()
+
+    # Assuming `labels` is the target and `embeddings` is the feature matrix
+    X_train, X_test, y_train, y_test = train_test_split(sentence_embeddings_tensor, y[:, 1], test_size=0.3, random_state=42)
+
+    # Train a Random Forest classifier
+    rf = RandomForestClassifier(n_estimators=100)
+    rf.fit(X_train, y_train)
+
+    # Get feature importance
+    feature_importances = rf.feature_importances_
+
+    # Plot feature importance
+    plt.figure(figsize=(10, 6))
+    plt.bar(range(len(feature_importances)), feature_importances)
+    plt.title("Feature Importance from Random Forest")
+    plt.xlabel("Feature Index")
+    plt.ylabel("Importance")
+    # plt.show()
+    plt.savefig("importance.png", dpi=300, bbox_inches="tight")
+    plt.close()
+
+    # Reduce dimensionality using t-SNE for visualization
+    tsne = TSNE(n_components=2, random_state=42)
+    tsne_result = tsne.fit_transform(sentence_embeddings_tensor)
+
+    # Plot the t-SNE results
+    plt.figure(figsize=(8, 6))
+    plt.scatter(tsne_result[y[:, 1] == 1, 0], tsne_result[y[:, 1] == 1, 1], color='blue', label='objective', alpha=0.5)
+    plt.scatter(tsne_result[y[:, 1] == 0, 0], tsne_result[y[:, 1] == 0, 1], color='red', label='subjective', alpha=0.5)
+    plt.title("t-SNE of Sentence Embeddings")
+    plt.xlabel("Component 1")
+    plt.ylabel("Component 2")
+    plt.legend()
+    plt.savefig("tsne.png", dpi=300, bbox_inches="tight")
+    plt.close()
+
+    correlation_matrix = np.corrcoef(sentence_embeddings_tensor, rowvar=False)
+    df_corr = pd.DataFrame(correlation_matrix)
+    plt.figure(figsize=(12, 8))
+    sns.heatmap(df_corr, annot=False, cmap='coolwarm', xticklabels=False, yticklabels=False)
+    plt.title("Correlation Matrix of Sentence Embeddings")
+    plt.savefig("corr_plot.png", dpi=300, bbox_inches="tight")
+
+    # Descriptive statistics for sentence embeddings
+    embedding_stats = pd.DataFrame(reduced_unnormalized).describe()
+
+    # Descriptive statistics for labels
+    label_stats = pd.Series(y[:, 1]).describe()
+
+    print("Embedding Statistics:\n", embedding_stats)
+    print("\nLabel Statistics:\n", label_stats)
 
 def main(argv=None):
     sentence_embeddings()
