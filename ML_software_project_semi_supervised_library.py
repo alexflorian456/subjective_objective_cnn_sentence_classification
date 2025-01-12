@@ -5,6 +5,7 @@ import data_helpers
 import math
 import tensorflow as tf
 from matplotlib import pyplot as plt
+from scipy.stats import t
 
 tf.flags.DEFINE_string("positive_data_file", "./data/subj-obj/all_obj.txt", "Data source for the positive data.")
 tf.flags.DEFINE_string("negative_data_file", "./data/subj-obj/all_subj.txt", "Data source for the negative data.")
@@ -118,6 +119,118 @@ def binary_classification_metrics(predicted_labels, ground_truth_labels):
         "Macro F1-Score": macro_f1
     }
 
+def clustering_metrics(X, labels, true_labels=None):
+    """
+    Computes internal and external clustering metrics.
+
+    Parameters:
+    - X: np.ndarray, the data points (n_samples, n_features).
+    - labels: np.ndarray, the predicted cluster labels (n_samples,).
+    - true_labels: np.ndarray or None, the ground truth labels (optional).
+
+    Returns:
+    - metrics: dict, dictionary with the computed metrics.
+    """
+
+    # Internal metrics
+    def silhouette_score(X, labels):
+        """Computes the silhouette score for internal evaluation."""
+        unique_labels = np.unique(labels)
+        if len(unique_labels) == 1:
+            return 0  # Silhouette score is undefined for one cluster
+
+        distances = np.linalg.norm(X[:, np.newaxis] - X, axis=2)
+        silhouette_values = []
+
+        for i in range(len(X)):
+            cluster = labels[i]
+            own_cluster = distances[i][labels == cluster]
+            other_clusters = [
+                distances[i][labels == other].mean()
+                for other in unique_labels if other != cluster
+            ]
+            a = own_cluster.mean() if len(own_cluster) > 1 else 0
+            b = min(other_clusters) if other_clusters else 0
+            silhouette_values.append((b - a) / max(a, b))
+        
+        return np.mean(silhouette_values)
+
+    def compute_davies_bouldin(X, labels):
+        """Computes Davies-Bouldin Index."""
+        unique_labels = np.unique(labels)
+        n_clusters = len(unique_labels)
+        if n_clusters <= 1:
+            return float('inf')  # Undefined for 1 or no clusters
+
+        centroids = np.array([X[labels == k].mean(axis=0) for k in unique_labels])
+        cluster_variances = [
+            np.mean(np.linalg.norm(X[labels == k] - centroid, axis=1))
+            for k, centroid in enumerate(centroids)
+        ]
+        db_values = []
+        for i in range(n_clusters):
+            max_ratio = 0
+            for j in range(n_clusters):
+                if i != j:
+                    ratio = (cluster_variances[i] + cluster_variances[j]) / np.linalg.norm(centroids[i] - centroids[j])
+                    max_ratio = max(max_ratio, ratio)
+            db_values.append(max_ratio)
+        return np.mean(db_values)
+
+    # External metrics (if ground truth labels are provided)
+    if true_labels is not None:
+        def adjusted_rand_index(labels, true_labels):
+            """Computes the Adjusted Rand Index manually."""
+            n = len(labels)
+            contingency = np.zeros((len(np.unique(labels)), len(np.unique(true_labels))))
+            for i in range(n):
+                contingency[labels[i], true_labels[i]] += 1
+
+            sum_rows = contingency.sum(axis=1)
+            sum_cols = contingency.sum(axis=0)
+            sum_comb = (contingency * (contingency - 1)).sum()
+
+            expected_index = sum(sum_rows * (sum_rows - 1)) * sum(sum_cols * (sum_cols - 1)) / (n * (n - 1))
+            max_index = (sum(sum_rows * (sum_rows - 1)) + sum(sum_cols * (sum_cols - 1))) / 2
+            return (sum_comb - expected_index) / (max_index - expected_index)
+
+        def normalized_mutual_info(labels, true_labels):
+            """Computes the Normalized Mutual Information manually."""
+            def entropy(labels):
+                probs = np.bincount(labels) / len(labels)
+                return -np.sum(probs * np.log2(probs + 1e-10))  # Avoid log(0)
+
+            joint = np.zeros((len(np.unique(labels)), len(np.unique(true_labels))))
+            for i in range(len(labels)):
+                joint[labels[i], true_labels[i]] += 1
+            joint /= joint.sum()
+
+            h_labels = entropy(labels)
+            h_true = entropy(true_labels)
+            h_joint = -np.sum(joint * np.log2(joint + 1e-10))  # Joint entropy
+
+            mutual_info = h_labels + h_true - h_joint
+            return mutual_info / max(h_labels, h_true)
+
+        ari = adjusted_rand_index(labels, true_labels)
+        nmi = normalized_mutual_info(labels, true_labels)
+    else:
+        ari = nmi = None
+
+    # Collect metrics
+    metrics = {
+        "Silhouette Score": silhouette_score(X, labels),
+        "Davies-Bouldin Index": compute_davies_bouldin(X, labels),
+    }
+
+    if true_labels is not None:
+        metrics.update({
+            "Adjusted Rand Index (ARI)": ari,
+            "Normalized Mutual Information (NMI)": nmi,
+        })
+
+    return metrics
+
 print("Loading data...")
 x_text, y = data_helpers.load_data_and_labels(FLAGS.positive_data_file, FLAGS.negative_data_file)
 # Build vocabulary
@@ -147,18 +260,22 @@ shuffle_perm = np.random.permutation(y.shape[0])
 X_shuffled = sentence_embeddings_tensor[shuffle_perm]
 y_shuffled = y[shuffle_perm]
 
+# Configuration
 fold_count = 5
-fold_size = y.shape[0] // 5
+fold_size = y.shape[0] // fold_count
+confidence_level = 0.95
 
-no_lda_accuracy_sum = 0
-no_lda_precision_sum = 0
-no_lda_recall_sum = 0
-no_lda_f1_sum = 0
+# Initialize accumulators for binary classification and clustering metrics
+no_lda_accuracies = []
+no_lda_precisions = []
+no_lda_recalls = []
+no_lda_f1_scores = []
+no_lda_silhouette_scores = []
+no_lda_davies_bouldin_indexes = []
+no_lda_adjusted_rand_indices = []
+no_lda_normalized_mutual_informations = []
 
 for fold_start in range(0, fold_size * fold_count, fold_size):
-
-    k = KMeans(n_clusters=2, random_state=42)
-    # No LDA
     # Define the range for the current test fold
     fold_end = fold_start + fold_size
     
@@ -169,40 +286,116 @@ for fold_start in range(0, fold_size * fold_count, fold_size):
     X_train = np.vstack((X_shuffled[:fold_start, :], X_shuffled[fold_end:, :]))
     y_train = np.vstack((y_shuffled[:fold_start, :], y_shuffled[fold_end:, :]))
 
+    # Train KMeans
+    k = KMeans(n_clusters=2, random_state=42)
     k.fit(X_train)
+    
+    # Predict clusters
     y_pred_no_lda = k.predict(X_test)
-
+    
+    # Compute metrics (Binary classification metrics)
     metrics_no_lda = binary_classification_metrics(y_pred_no_lda, y_test[:, 0])
-    metrics_no_lda_inv = binary_classification_metrics(1- y_pred_no_lda, y_test[:, 0])
+    metrics_no_lda_inv = binary_classification_metrics(1 - y_pred_no_lda, y_test[:, 0])
     metrics_no_lda = metrics_no_lda if metrics_no_lda['Accuracy'] > metrics_no_lda_inv['Accuracy'] else metrics_no_lda_inv
+    
+    # Append binary classification metrics for this fold
+    no_lda_accuracies.append(metrics_no_lda['Accuracy'])
+    no_lda_precisions.append(metrics_no_lda['Macro Precision'])
+    no_lda_recalls.append(metrics_no_lda['Macro Recall'])
+    no_lda_f1_scores.append(metrics_no_lda['Macro F1-Score'])
+    
+    # Compute clustering metrics (Internal and External)
+    clustering_metrics_fold = clustering_metrics(X_test, y_pred_no_lda, true_labels=y_test[:, 0])  # Assuming y_test contains true labels
+    
+    # Unpack clustering metrics and store in separate accumulators
+    no_lda_silhouette_scores.append(clustering_metrics_fold["Silhouette Score"])
+    no_lda_davies_bouldin_indexes.append(clustering_metrics_fold["Davies-Bouldin Index"])
+    no_lda_adjusted_rand_indices.append(clustering_metrics_fold["Adjusted Rand Index (ARI)"])
+    no_lda_normalized_mutual_informations.append(clustering_metrics_fold["Normalized Mutual Information (NMI)"])
 
-    no_lda_accuracy_sum += metrics_no_lda['Accuracy']
-    no_lda_precision_sum += metrics_no_lda['Macro Precision']
-    no_lda_recall_sum += metrics_no_lda['Macro Recall']
-    no_lda_f1_sum += metrics_no_lda['Macro F1-Score']
+# Convert metrics to numpy arrays for statistical analysis
+no_lda_accuracies = np.array(no_lda_accuracies)
+no_lda_precisions = np.array(no_lda_precisions)
+no_lda_recalls = np.array(no_lda_recalls)
+no_lda_f1_scores = np.array(no_lda_f1_scores)
+no_lda_silhouette_scores = np.array(no_lda_silhouette_scores)
+no_lda_davies_bouldin_indexes = np.array(no_lda_davies_bouldin_indexes)
+no_lda_adjusted_rand_indices = np.array(no_lda_adjusted_rand_indices)
+no_lda_normalized_mutual_informations = np.array(no_lda_normalized_mutual_informations)
 
-# Compute averages across folds
-no_lda_accuracy_avg = no_lda_accuracy_sum / fold_count
-no_lda_precision_avg = no_lda_precision_sum / fold_count
-no_lda_recall_avg = no_lda_recall_sum / fold_count
-no_lda_f1_avg = no_lda_f1_sum / fold_count
+# Compute means for binary classification metrics
+accuracy_mean = np.mean(no_lda_accuracies)
+precision_mean = np.mean(no_lda_precisions)
+recall_mean = np.mean(no_lda_recalls)
+f1_mean = np.mean(no_lda_f1_scores)
 
-# Print results
+# Compute standard deviations for binary classification metrics
+accuracy_std = np.std(no_lda_accuracies, ddof=1)
+precision_std = np.std(no_lda_precisions, ddof=1)
+recall_std = np.std(no_lda_recalls, ddof=1)
+f1_std = np.std(no_lda_f1_scores, ddof=1)
+
+# Compute confidence intervals (95%) for binary classification metrics
+t_value = t.ppf((1 + confidence_level) / 2, df=fold_count - 1)
+accuracy_ci = (accuracy_mean - t_value * accuracy_std / np.sqrt(fold_count), 
+               accuracy_mean + t_value * accuracy_std / np.sqrt(fold_count))
+precision_ci = (precision_mean - t_value * precision_std / np.sqrt(fold_count), 
+                precision_mean + t_value * precision_std / np.sqrt(fold_count))
+recall_ci = (recall_mean - t_value * recall_std / np.sqrt(fold_count), 
+             recall_mean + t_value * recall_std / np.sqrt(fold_count))
+f1_ci = (f1_mean - t_value * f1_std / np.sqrt(fold_count), 
+         f1_mean + t_value * f1_std / np.sqrt(fold_count))
+
+# Print binary classification results
 print("Cross val No-LDA metrics:")
-print(f"Accuracy: {no_lda_accuracy_avg:.6f}")
-print(f"Macro Precision: {no_lda_precision_avg:.6f}")
-print(f"Macro Recall: {no_lda_recall_avg:.6f}")
-print(f"Macro F1: {no_lda_f1_avg:.6f}")
+print(f"Accuracy: {accuracy_mean:.6f} ± {accuracy_std:.6f}, CI: {accuracy_ci}")
+print(f"Macro Precision: {precision_mean:.6f} ± {precision_std:.6f}, CI: {precision_ci}")
+print(f"Macro Recall: {recall_mean:.6f} ± {recall_std:.6f}, CI: {recall_ci}")
+print(f"Macro F1: {f1_mean:.6f} ± {f1_std:.6f}, CI: {f1_ci}")
 
-lda_accuracy_sum = 0
-lda_precision_sum = 0
-lda_recall_sum = 0
-lda_f1_sum = 0
+# Now compute statistics for clustering metrics
+# Silhouette Score
+silhouette_mean = np.mean(no_lda_silhouette_scores)
+silhouette_std = np.std(no_lda_silhouette_scores, ddof=1)
+silhouette_ci = (silhouette_mean - t_value * silhouette_std / np.sqrt(fold_count), 
+                 silhouette_mean + t_value * silhouette_std / np.sqrt(fold_count))
+
+# Davies-Bouldin Index
+davies_bouldin_mean = np.mean(no_lda_davies_bouldin_indexes)
+davies_bouldin_std = np.std(no_lda_davies_bouldin_indexes, ddof=1)
+davies_bouldin_ci = (davies_bouldin_mean - t_value * davies_bouldin_std / np.sqrt(fold_count), 
+                     davies_bouldin_mean + t_value * davies_bouldin_std / np.sqrt(fold_count))
+
+# Adjusted Rand Index (ARI)
+ari_mean = np.mean(no_lda_adjusted_rand_indices)
+ari_std = np.std(no_lda_adjusted_rand_indices, ddof=1)
+ari_ci = (ari_mean - t_value * ari_std / np.sqrt(fold_count), 
+          ari_mean + t_value * ari_std / np.sqrt(fold_count))
+
+# Normalized Mutual Information (NMI)
+nmi_mean = np.mean(no_lda_normalized_mutual_informations)
+nmi_std = np.std(no_lda_normalized_mutual_informations, ddof=1)
+nmi_ci = (nmi_mean - t_value * nmi_std / np.sqrt(fold_count), 
+          nmi_mean + t_value * nmi_std / np.sqrt(fold_count))
+
+# Print clustering metrics results
+print("\nClustering metrics:")
+print(f"Silhouette Score: {silhouette_mean:.6f} ± {silhouette_std:.6f}, CI: {silhouette_ci}")
+print(f"Davies-Bouldin Index: {davies_bouldin_mean:.6f} ± {davies_bouldin_std:.6f}, CI: {davies_bouldin_ci}")
+print(f"Adjusted Rand Index (ARI): {ari_mean:.6f} ± {ari_std:.6f}, CI: {ari_ci}")
+print(f"Normalized Mutual Information (NMI): {nmi_mean:.6f} ± {nmi_std:.6f}, CI: {nmi_ci}")
+
+# Initialize accumulators for binary classification and clustering metrics
+lda_accuracies = []
+lda_precisions = []
+lda_recalls = []
+lda_f1_scores = []
+lda_silhouette_scores = []
+lda_davies_bouldin_indexes = []
+lda_adjusted_rand_indices = []
+lda_normalized_mutual_informations = []
 
 for fold_start in range(0, fold_size * fold_count, fold_size):
-
-    k = KMeans(n_clusters=2, random_state=42)
-    # No LDA
     # Define the range for the current test fold
     fold_end = fold_start + fold_size
     
@@ -213,36 +406,108 @@ for fold_start in range(0, fold_size * fold_count, fold_size):
     X_train = np.vstack((X_shuffled[:fold_start, :], X_shuffled[fold_end:, :]))
     y_train = np.vstack((y_shuffled[:fold_start, :], y_shuffled[fold_end:, :]))
 
+    # Perform LDA
     lda = LinearDiscriminantAnalysis(n_components=1)
     lda.fit(X_train, y_train[:, 0])
     X_train_lda = lda.transform(X_train)
     X_test_lda = lda.transform(X_test)
 
+    # Train KMeans
+    k = KMeans(n_clusters=2, random_state=42)
     k.fit(X_train_lda)
     y_pred_lda = k.predict(X_test_lda)
 
+    # Compute binary classification metrics
     metrics_lda = binary_classification_metrics(y_pred_lda, y_test[:, 0])
-    metrics_lda_inv = binary_classification_metrics(1- y_pred_lda, y_test[:, 0])
+    metrics_lda_inv = binary_classification_metrics(1 - y_pred_lda, y_test[:, 0])
     metrics_lda = metrics_lda if metrics_lda['Accuracy'] > metrics_lda_inv['Accuracy'] else metrics_lda_inv
 
-    lda_accuracy_sum += metrics_lda['Accuracy']
-    lda_precision_sum += metrics_lda['Macro Precision']
-    lda_recall_sum += metrics_lda['Macro Recall']
-    lda_f1_sum += metrics_lda['Macro F1-Score']
+    # Append binary classification metrics for this fold
+    lda_accuracies.append(metrics_lda['Accuracy'])
+    lda_precisions.append(metrics_lda['Macro Precision'])
+    lda_recalls.append(metrics_lda['Macro Recall'])
+    lda_f1_scores.append(metrics_lda['Macro F1-Score'])
 
-# Compute averages across folds
-lda_accuracy_avg = lda_accuracy_sum / fold_count
-lda_precision_avg = lda_precision_sum / fold_count
-lda_recall_avg = lda_recall_sum / fold_count
-lda_f1_avg = lda_f1_sum / fold_count
+    # Compute clustering metrics (Internal and External)
+    clustering_metrics_fold = clustering_metrics(X_test, y_pred_lda, true_labels=y_test[:, 0])  # Assuming y_test contains true labels
+    
+    # Unpack clustering metrics and store in separate accumulators
+    lda_silhouette_scores.append(clustering_metrics_fold["Silhouette Score"])
+    lda_davies_bouldin_indexes.append(clustering_metrics_fold["Davies-Bouldin Index"])
+    lda_adjusted_rand_indices.append(clustering_metrics_fold["Adjusted Rand Index (ARI)"])
+    lda_normalized_mutual_informations.append(clustering_metrics_fold["Normalized Mutual Information (NMI)"])
 
-# Print results
-print()
+# Convert metrics to numpy arrays for statistical analysis
+lda_accuracies = np.array(lda_accuracies)
+lda_precisions = np.array(lda_precisions)
+lda_recalls = np.array(lda_recalls)
+lda_f1_scores = np.array(lda_f1_scores)
+lda_silhouette_scores = np.array(lda_silhouette_scores)
+lda_davies_bouldin_indexes = np.array(lda_davies_bouldin_indexes)
+lda_adjusted_rand_indices = np.array(lda_adjusted_rand_indices)
+lda_normalized_mutual_informations = np.array(lda_normalized_mutual_informations)
+
+# Compute means for binary classification metrics
+lda_accuracy_mean = np.mean(lda_accuracies)
+lda_precision_mean = np.mean(lda_precisions)
+lda_recall_mean = np.mean(lda_recalls)
+lda_f1_mean = np.mean(lda_f1_scores)
+
+# Compute standard deviations for binary classification metrics
+lda_accuracy_std = np.std(lda_accuracies, ddof=1)
+lda_precision_std = np.std(lda_precisions, ddof=1)
+lda_recall_std = np.std(lda_recalls, ddof=1)
+lda_f1_std = np.std(lda_f1_scores, ddof=1)
+
+# Compute confidence intervals (95%)
+t_value = t.ppf((1 + confidence_level) / 2, df=fold_count - 1)
+lda_accuracy_ci = (lda_accuracy_mean - t_value * lda_accuracy_std / np.sqrt(fold_count), 
+                   lda_accuracy_mean + t_value * lda_accuracy_std / np.sqrt(fold_count))
+lda_precision_ci = (lda_precision_mean - t_value * lda_precision_std / np.sqrt(fold_count), 
+                    lda_precision_mean + t_value * lda_precision_std / np.sqrt(fold_count))
+lda_recall_ci = (lda_recall_mean - t_value * lda_recall_std / np.sqrt(fold_count), 
+                 lda_recall_mean + t_value * lda_recall_std / np.sqrt(fold_count))
+lda_f1_ci = (lda_f1_mean - t_value * lda_f1_std / np.sqrt(fold_count), 
+             lda_f1_mean + t_value * lda_f1_std / np.sqrt(fold_count))
+
+# Print binary classification results
 print("Cross val LDA metrics:")
-print(f"Accuracy: {lda_accuracy_avg:.6f}")
-print(f"Macro Precision: {lda_precision_avg:.6f}")
-print(f"Macro Recall: {lda_recall_avg:.6f}")
-print(f"Macro F1: {lda_f1_avg:.6f}")
+print(f"Accuracy: {lda_accuracy_mean:.6f} ± {lda_accuracy_std:.6f}, CI: {lda_accuracy_ci}")
+print(f"Macro Precision: {lda_precision_mean:.6f} ± {lda_precision_std:.6f}, CI: {lda_precision_ci}")
+print(f"Macro Recall: {lda_recall_mean:.6f} ± {lda_recall_std:.6f}, CI: {lda_recall_ci}")
+print(f"Macro F1: {lda_f1_mean:.6f} ± {lda_f1_std:.6f}, CI: {lda_f1_ci}")
+
+# Now compute statistics for clustering metrics
+# Silhouette Score
+silhouette_mean = np.mean(lda_silhouette_scores)
+silhouette_std = np.std(lda_silhouette_scores, ddof=1)
+silhouette_ci = (silhouette_mean - t_value * silhouette_std / np.sqrt(fold_count), 
+                 silhouette_mean + t_value * silhouette_std / np.sqrt(fold_count))
+
+# Davies-Bouldin Index
+davies_bouldin_mean = np.mean(lda_davies_bouldin_indexes)
+davies_bouldin_std = np.std(lda_davies_bouldin_indexes, ddof=1)
+davies_bouldin_ci = (davies_bouldin_mean - t_value * davies_bouldin_std / np.sqrt(fold_count), 
+                     davies_bouldin_mean + t_value * davies_bouldin_std / np.sqrt(fold_count))
+
+# Adjusted Rand Index (ARI)
+ari_mean = np.mean(lda_adjusted_rand_indices)
+ari_std = np.std(lda_adjusted_rand_indices, ddof=1)
+ari_ci = (ari_mean - t_value * ari_std / np.sqrt(fold_count), 
+          ari_mean + t_value * ari_std / np.sqrt(fold_count))
+
+# Normalized Mutual Information (NMI)
+nmi_mean = np.mean(lda_normalized_mutual_informations)
+nmi_std = np.std(lda_normalized_mutual_informations, ddof=1)
+nmi_ci = (nmi_mean - t_value * nmi_std / np.sqrt(fold_count), 
+          nmi_mean + t_value * nmi_std / np.sqrt(fold_count))
+
+# Print clustering metrics results
+print("\nClustering metrics:")
+print(f"Silhouette Score: {silhouette_mean:.6f} ± {silhouette_std:.6f}, CI: {silhouette_ci}")
+print(f"Davies-Bouldin Index: {davies_bouldin_mean:.6f} ± {davies_bouldin_std:.6f}, CI: {davies_bouldin_ci}")
+print(f"Adjusted Rand Index (ARI): {ari_mean:.6f} ± {ari_std:.6f}, CI: {ari_ci}")
+print(f"Normalized Mutual Information (NMI): {nmi_mean:.6f} ± {nmi_std:.6f}, CI: {nmi_ci}")
 
 # lda = LinearDiscriminantAnalysis(n_components=1)
 # sentences_transformed = lda.fit_transform(sentence_embeddings_tensor, y[:, 1])
