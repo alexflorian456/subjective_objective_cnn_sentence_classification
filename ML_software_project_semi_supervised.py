@@ -110,6 +110,8 @@ class LDA:
 
     def transform(self, X):
         # project data
+        print(self.linear_discriminants)
+        print(self.linear_discriminants.shape)
         return np.dot(X, self.linear_discriminants.T)
 
 class KMeans:
@@ -203,6 +205,57 @@ class KMeans:
             ax.scatter(*point, marker="x", color="black", linewidth=2)
 
         plt.savefig(f"kmeans_steps/{step}.png")
+        plt.close()
+
+def binary_classification_metrics(predicted_labels, ground_truth_labels):
+    """
+    Compute Accuracy, Precision, Recall, and F1-Score for both classes
+    and report their macro-average.
+
+    Parameters:
+    - predicted_labels: Array-like, predicted labels (0 or 1).
+    - ground_truth_labels: Array-like, ground truth labels (0 or 1).
+
+    Returns:
+    - metrics: A dictionary containing accuracy, macro precision, macro recall, and macro F1-score.
+    """
+    # Convert inputs to numpy arrays
+    predicted_labels = np.array(predicted_labels)
+    ground_truth_labels = np.array(ground_truth_labels)
+
+    # Metrics for class 0
+    TP_0 = np.sum((predicted_labels == 0) & (ground_truth_labels == 0))
+    FP_0 = np.sum((predicted_labels == 0) & (ground_truth_labels == 1))
+    FN_0 = np.sum((predicted_labels == 1) & (ground_truth_labels == 0))
+
+    precision_0 = TP_0 / (TP_0 + FP_0) if (TP_0 + FP_0) > 0 else 0.0
+    recall_0 = TP_0 / (TP_0 + FN_0) if (TP_0 + FN_0) > 0 else 0.0
+    f1_0 = (2 * precision_0 * recall_0) / (precision_0 + recall_0) if (precision_0 + recall_0) > 0 else 0.0
+
+    # Metrics for class 1
+    TP_1 = np.sum((predicted_labels == 1) & (ground_truth_labels == 1))
+    FP_1 = np.sum((predicted_labels == 1) & (ground_truth_labels == 0))
+    FN_1 = np.sum((predicted_labels == 0) & (ground_truth_labels == 1))
+
+    precision_1 = TP_1 / (TP_1 + FP_1) if (TP_1 + FP_1) > 0 else 0.0
+    recall_1 = TP_1 / (TP_1 + FN_1) if (TP_1 + FN_1) > 0 else 0.0
+    f1_1 = (2 * precision_1 * recall_1) / (precision_1 + recall_1) if (precision_1 + recall_1) > 0 else 0.0
+
+    # Macro-average metrics
+    macro_precision = (precision_0 + precision_1) / 2
+    macro_recall = (recall_0 + recall_1) / 2
+    macro_f1 = (f1_0 + f1_1) / 2
+
+    # Accuracy
+    accuracy = np.sum(predicted_labels == ground_truth_labels) / len(ground_truth_labels)
+
+    # Return results as a dictionary
+    return {
+        "Accuracy": accuracy,
+        "Macro Precision": macro_precision,
+        "Macro Recall": macro_recall,
+        "Macro F1-Score": macro_f1
+    }
 
 print("Loading data...")
 x_text, y = data_helpers.load_data_and_labels(FLAGS.positive_data_file, FLAGS.negative_data_file)
@@ -227,15 +280,29 @@ for sentence_index, sentence in enumerate(x):
     if math.isnan(np.linalg.norm(sentence_embeddings_tensor[sentence_index])):
         print("Nan embedding: ", sentence, x_text[sentence_index])
 
-lda_n_components = 10
-lda = LDA(lda_n_components)
-lda.fit(sentence_embeddings_tensor, y[:, 1])
-sentences_transformed = lda.transform(sentence_embeddings_tensor)
-print(sentences_transformed.shape)
-plt.scatter(sentences_transformed[y[:, 1] == 1.0, 0], sentences_transformed[y[:, 1] == 1.0, 1], alpha=0.5, color='blue')
-plt.scatter(sentences_transformed[y[:, 1] == 0.0, 0], sentences_transformed[y[:, 1] == 0.0, 1], alpha=0.5, color='red')
-plt.savefig("lda_test.png")
-plt.close()
+print(sentence_embeddings_tensor.shape)
 
-k = KMeans(K=2, max_iters=150, plot_steps=True)
-y_pred = k.predict(sentences_transformed)
+k = KMeans(K=2, max_iters=150, plot_steps=False)
+# No LDA
+y_pred_no_lda = k.predict(sentence_embeddings_tensor)
+
+metrics_no_lda = binary_classification_metrics(y_pred_no_lda, y[:, 1])
+metrics_no_lda_inv = binary_classification_metrics(1- y_pred_no_lda, y[:, 1])
+
+print("No LDA:")
+print(metrics_no_lda if metrics_no_lda['Accuracy'] > metrics_no_lda_inv['Accuracy'] else metrics_no_lda_inv)
+
+# LDA with different numbers of components
+for lda_n_components in range(1, 101):
+    print(f"{lda_n_components} LDA components:")
+    lda = LDA(lda_n_components)
+    lda.fit(sentence_embeddings_tensor, y[:, 1])
+    sentences_transformed = lda.transform(sentence_embeddings_tensor)
+    print(sentences_transformed.shape)
+
+    y_pred = k.predict(sentences_transformed)
+
+    metrics = binary_classification_metrics(y_pred, y[:, 1])
+    metrics_inv = binary_classification_metrics(1 - y_pred, y[:, 1])
+
+    print(metrics if metrics['Accuracy'] > metrics_inv['Accuracy'] else metrics_inv)
