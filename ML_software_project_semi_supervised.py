@@ -4,6 +4,7 @@ import math
 import tensorflow as tf
 from matplotlib import pyplot as plt
 from scipy.stats import t
+import pandas
 
 tf.flags.DEFINE_string("positive_data_file", "./data/subj-obj/all_obj.txt", "Data source for the positive data.")
 tf.flags.DEFINE_string("negative_data_file", "./data/subj-obj/all_subj.txt", "Data source for the negative data.")
@@ -11,6 +12,18 @@ tf.flags.DEFINE_string("negative_data_file", "./data/subj-obj/all_subj.txt", "Da
 vocab_file = "./corola.100.50.vec"
 
 FLAGS = tf.flags.FLAGS
+
+metrics_data = {
+    "LDA n components:": [],
+    "Accuracy": [],
+    "Macro Precision": [],
+    "Macro Recall": [],
+    "Macro F1-Score": [],
+    "Silhouette Score": [],
+    "Davies-Bouldin Index": [],
+    "Adjusted Rand Index (ARI)": [],
+    "Normalized Mutual Information (NMI)": [],
+}
 
 def euclidean_distance(x1, x2):
     return np.sqrt(np.sum((x1 - x2) ** 2))
@@ -297,12 +310,9 @@ def clustering_metrics(X, labels, true_labels=None):
 
     def compute_davies_bouldin(X, labels):
         """Computes Davies-Bouldin Index."""
-        unique_labels = np.unique(labels)
-        n_clusters = len(unique_labels)
-        if n_clusters <= 1:
-            return float('inf')  # Undefined for 1 or no clusters
-
-        centroids = np.array([X[labels == k].mean(axis=0) for k in unique_labels])
+        n_clusters = 2
+        
+        centroids = np.array([X[labels == k].mean(axis=0) for k in [0, 1]])
         cluster_variances = [
             np.mean(np.linalg.norm(X[labels == k] - centroid, axis=1))
             for k, centroid in enumerate(centroids)
@@ -663,3 +673,17 @@ for lda_n_components in range(1, 101):
     print(f"Davies-Bouldin Index: {davies_bouldin_mean:.6f} ± {davies_bouldin_std:.6f}, CI: {davies_bouldin_ci}")
     print(f"Adjusted Rand Index (ARI): {ari_mean:.6f} ± {ari_std:.6f}, CI: {ari_ci}")
     print(f"Normalized Mutual Information (NMI): {nmi_mean:.6f} ± {nmi_std:.6f}, CI: {nmi_ci}")
+
+    metrics_data["LDA n components:"].append(lda_n_components)
+    metrics_data["Accuracy"].append(accuracy_mean)
+    metrics_data["Macro Precision"].append(precision_mean)
+    metrics_data["Macro Recall"].append(recall_mean)
+    metrics_data["Macro F1-Score"].append(f1_mean)
+    metrics_data["Silhouette Score"].append(silhouette_mean)
+    metrics_data["Davies-Bouldin Index"].append(davies_bouldin_mean)
+    metrics_data["Adjusted Rand Index (ARI)"].append(ari_mean)
+    metrics_data["Normalized Mutual Information (NMI)"].append(nmi_mean)
+
+metrics_df = pandas.DataFrame(metrics_data)
+metrics_df.to_csv("semi_supervised_metrics.csv", index=False)
+
